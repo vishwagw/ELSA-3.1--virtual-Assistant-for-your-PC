@@ -2262,4 +2262,21 @@ def hear_folder_path():
         return path
     return ""
 
+# main program initializing:
+if __name__ == "__main__":
+    emotional_intelligence_mode = False  # Ensure defined
+    load_schedule()  # Load schedule on start
+    start_reminder_system()  # Start reminders automatically
+    check_morning_briefing()  # Check for morning briefing
+    try:
+        virtual_assistant()
+    except KeyboardInterrupt:
+        speak("Shutting down. Goodbye!")
+        cleanup_object_recognition()
+        if surveillance_system:
+            surveillance_system.cleanup()
+        if surveillance_thread and surveillance_thread.is_alive():
+            surveillance_thread.join(timeout=1.0)
+        stop_reminder_system()
+
 
