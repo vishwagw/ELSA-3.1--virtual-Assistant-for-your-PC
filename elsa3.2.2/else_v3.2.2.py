@@ -912,4 +912,936 @@ def check_morning_briefing():
             return True
     return False
 
+# =============================================================================
+# REINFORCEMENT LEARNING
+# =============================================================================
+
+# Data structures for learning
+@dataclass
+class UserInteraction:
+    timestamp: str
+    command: str
+    response_type: str
+    user_feedback: float  # -1 (negative), 0 (neutral), 1 (positive)
+    context: Dict[str, Any]
+    success: bool
+
+@dataclass
+class UserPreference:
+    preference_type: str
+    value: Any
+    confidence: float
+    last_updated: str
+
+class ReinforcementLearningEngine:
+    def __init__(self, learning_rate=0.1, discount_factor=0.9, exploration_rate=0.1):
+        self.learning_rate = learning_rate
+        self.discount_factor = discount_factor
+        self.exploration_rate = exploration_rate
+        
+        # Q-table for state-action values
+        self.q_table = defaultdict(lambda: defaultdict(float))
+        
+        # User interaction history
+        self.interaction_history = deque(maxlen=1000)
+        
+        # User preferences
+        self.user_preferences = {}
+        
+        # Response patterns and their success rates
+        self.response_patterns = defaultdict(list)
+        
+        # Learning data file paths
+        self.data_dir = "trinity_learning_data"
+        self.q_table_file = os.path.join(self.data_dir, "q_table.pkl")
+        self.preferences_file = os.path.join(self.data_dir, "user_preferences.json")
+        self.history_file = os.path.join(self.data_dir, "interaction_history.pkl")
+        
+        # Create data directory
+        os.makedirs(self.data_dir, exist_ok=True)
+        
+        # Load existing data
+        self.load_learning_data()
+    
+    def save_learning_data(self):
+        """Save all learning data to files"""
+        try:
+            # Save Q-table
+            with open(self.q_table_file, 'wb') as f:
+                pickle.dump(dict(self.q_table), f)
+            
+            # Save preferences
+            preferences_data = {k: asdict(v) for k, v in self.user_preferences.items()}
+            with open(self.preferences_file, 'w') as f:
+                json.dump(preferences_data, f, indent=2)
+            
+            # Save interaction history
+            with open(self.history_file, 'wb') as f:
+                pickle.dump(list(self.interaction_history), f)
+                
+        except Exception as e:
+            print(f"Error saving learning data: {e}")
+    
+    def load_learning_data(self):
+        """Load existing learning data from files"""
+        try:
+            # Load Q-table
+            if os.path.exists(self.q_table_file):
+                with open(self.q_table_file, 'rb') as f:
+                    loaded_q_table = pickle.load(f)
+                    self.q_table = defaultdict(lambda: defaultdict(float), loaded_q_table)
+            
+            # Load preferences
+            if os.path.exists(self.preferences_file):
+                with open(self.preferences_file, 'r') as f:
+                    preferences_data = json.load(f)
+                    for k, v in preferences_data.items():
+                        self.user_preferences[k] = UserPreference(**v)
+            
+            # Load interaction history
+            if os.path.exists(self.history_file):
+                with open(self.history_file, 'rb') as f:
+                    history_data = pickle.load(f)
+                    self.interaction_history = deque(history_data, maxlen=1000)
+                    
+        except Exception as e:
+            print(f"Error loading learning data: {e}")
+    
+    def get_state_representation(self, command, context):
+        """Convert command and context into a state representation"""
+        # Extract key features from command
+        command_words = command.lower().split()
+        command_type = self.classify_command_type(command)
+        
+        # Time-based features
+        current_hour = datetime.datetime.now().hour
+        time_of_day = "morning" if current_hour < 12 else "afternoon" if current_hour < 18 else "evening"
+        
+        # Context features
+        recent_commands = [interaction.command for interaction in list(self.interaction_history)[-5:]]
+        
+        state = f"{command_type}_{time_of_day}_{len(command_words)}"
+        return state
+    
+    def classify_command_type(self, command):
+        """Classify the type of command"""
+        command = command.lower()
+        
+        if any(word in command for word in ["open", "launch", "start"]):
+            return "open_action"
+        elif any(word in command for word in ["search", "find", "look"]):
+            return "search_action"
+        elif any(word in command for word in ["time", "date", "weather"]):
+            return "info_query"
+        elif any(word in command for word in ["system", "check", "status"]):
+            return "system_action"
+        elif any(word in command for word in ["hello", "hi", "hey"]):
+            return "greeting"
+        else:
+            return "other"
+    
+    def choose_action(self, state, available_actions):
+        """Choose action using epsilon-greedy strategy"""
+        if np.random.random() < self.exploration_rate:
+            # Explore: choose random action
+            return np.random.choice(available_actions)
+        else:
+            # Exploit: choose best known action
+            q_values = [self.q_table[state][action] for action in available_actions]
+            best_action_idx = np.argmax(q_values)
+            return available_actions[best_action_idx]
+    
+    def update_q_value(self, state, action, reward, next_state, next_actions):
+        """Update Q-value using Q-learning algorithm"""
+        current_q = self.q_table[state][action]
+        
+        if next_actions:
+            max_next_q = max([self.q_table[next_state][next_action] for next_action in next_actions])
+        else:
+            max_next_q = 0
+        
+        new_q = current_q + self.learning_rate * (reward + self.discount_factor * max_next_q - current_q)
+        self.q_table[state][action] = new_q
+    
+    def record_interaction(self, command, response_type, user_feedback, context, success):
+        """Record user interaction for learning"""
+        interaction = UserInteraction(
+            timestamp=datetime.datetime.now().isoformat(),
+            command=command,
+            response_type=response_type,
+            user_feedback=user_feedback,
+            context=context,
+            success=success
+        )
+        
+        self.interaction_history.append(interaction)
+        
+        # Update Q-values based on feedback
+        state = self.get_state_representation(command, context)
+        reward = user_feedback
+        
+        # Simple reward shaping
+        if success:
+            reward += 0.5
+        
+        self.update_q_value(state, response_type, reward, state, [response_type])
+        
+        # Update user preferences
+        self.update_preferences(command, response_type, user_feedback)
+        
+        # Save data periodically
+        if len(self.interaction_history) % 10 == 0:
+            self.save_learning_data()
+    
+    def update_preferences(self, command, response_type, feedback):
+        """Update user preferences based on feedback"""
+        command_type = self.classify_command_type(command)
+        
+        preference_key = f"{command_type}_preference"
+        
+        if preference_key in self.user_preferences:
+            # Update existing preference
+            pref = self.user_preferences[preference_key]
+            pref.confidence = pref.confidence * 0.9 + feedback * 0.1
+            pref.last_updated = datetime.datetime.now().isoformat()
+        else:
+            # Create new preference
+            self.user_preferences[preference_key] = UserPreference(
+                preference_type=command_type,
+                value=response_type,
+                confidence=feedback,
+                last_updated=datetime.datetime.now().isoformat()
+            )
+    
+    def get_personalized_response(self, command, context):
+        """Get personalized response based on learned preferences"""
+        command_type = self.classify_command_type(command)
+        preference_key = f"{command_type}_preference"
+        
+        if preference_key in self.user_preferences:
+            pref = self.user_preferences[preference_key]
+            if pref.confidence > 0.5:
+                return f"personalized_{pref.value}"
+        
+        return "default"
+    
+    def get_learning_summary(self):
+        """Get summary of learning progress"""
+        total_interactions = len(self.interaction_history)
+        positive_feedback = sum(1 for i in self.interaction_history if i.user_feedback > 0)
+        success_rate = sum(1 for i in self.interaction_history if i.success) / max(total_interactions, 1)
+        
+        return {
+            "total_interactions": total_interactions,
+            "positive_feedback_count": positive_feedback,
+            "success_rate": success_rate,
+            "learned_preferences": len(self.user_preferences),
+            "q_table_size": len(self.q_table)
+        }
+
+# Global RL engine instance
+rl_engine = ReinforcementLearningEngine()
+
+# Learning analytics function
+def show_learning_stats():
+    """Show learning statistics to the user"""
+    stats = rl_engine.get_learning_summary()
+    
+    report = (
+        f"Learning Statistics: I've had {stats['total_interactions']} interactions with you. "
+        f"You've given positive feedback {stats['positive_feedback_count']} times. "
+        f"My success rate is {stats['success_rate']:.1%}. "
+        f"I've learned {stats['learned_preferences']} preferences about how you like me to respond."
+    )
+    
+    speak(report)
+
+# =============================================================================
+# SURVEILLANCE MODE
+# =============================================================================
+
+# Object detection variables
+surveillance_system = None
+object_recognition_mode = False
+yolo_model = None
+cap = None
+detection_thread = None
+detection_queue = Queue()
+stop_event = threading.Event()
+
+def run_surveillance():
+    surveillance_system.run()
+
+surveillance_thread = None
+
+def start_surveillance_thread():
+    global surveillance_thread
+    if surveillance_thread is None or not surveillance_thread.is_alive():
+        surveillance_thread = threading.Thread(target=run_surveillance, daemon=True)
+        surveillance_thread.start()
+        speak("Surveillance system started in the background.")
+    else:
+        speak("Surveillance system is already running.")
+
+def detection_loop():
+    """Run continuous object detection and display in a window"""
+    global yolo_model, cap, detection_queue, stop_event
+    while not stop_event.is_set():
+        if cap is None or not cap.isOpened():
+            break
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        
+        # Perform object detection
+        results = yolo_model(frame)
+        detected_objects = []
+        for r in results:
+            boxes = r.boxes
+            for box in boxes:
+                cls = int(box.cls[0])
+                label = yolo_model.names[cls]
+                conf = float(box.conf)
+                if conf > 0.5:  # Confidence threshold
+                    detected_objects.append(label)
+                    # Draw bounding box and label
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1 - 10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        
+        # Update detection queue
+        detection_queue.put(detected_objects)
+        
+        # Display frame
+        cv2.imshow("YOLOv8 Object Detection", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):  # Allow manual window close
+            stop_event.set()
+        
+        # Small delay to avoid overloading CPU
+        time.sleep(0.03)  # ~30 FPS
+    
+    # Clean up
+    cleanup_object_recognition()
+
+def init_object_recognition():
+    """Initialize YOLOv8 model, webcam, and detection window"""
+    global yolo_model, cap, detection_thread, object_recognition_mode, stop_event
+    try:
+        yolo_model = YOLO("yolov8n.pt")  # Load YOLOv8 nano model
+        cap = cv2.VideoCapture(0)  # Open default webcam
+        if not cap.isOpened():
+            speak("Error: Could not access webcam.")
+            return False
+        stop_event.clear()  # Reset stop event
+        object_recognition_mode = True
+        # Start detection thread
+        detection_thread = threading.Thread(target=detection_loop, daemon=True)
+        detection_thread.start()
+        return True
+    except Exception as e:
+        speak(f"Error initializing object recognition: {str(e)}")
+        return False
+
+def describe_objects():
+    """Describe objects from the latest detection"""
+    global object_recognition_mode, detection_queue
+    if not object_recognition_mode:
+        return "Object recognition mode is not active."
+    
+    try:
+        # Get latest detected objects from queue
+        if detection_queue.empty():
+            return "I don't see any objects right now."
+        detected_objects = detection_queue.get()
+        
+        if not detected_objects:
+            return "I don't see any objects right now."
+        
+        # Create a natural language description
+        unique_objects = list(set(detected_objects))
+        object_count = len(detected_objects)
+        if object_count == 1:
+            return f"I see one {unique_objects[0]}."
+        else:
+            objects_str = ", ".join(unique_objects[:-1]) + f" and {unique_objects[-1]}" if len(unique_objects) > 1 else unique_objects[0]
+            return f"I see {object_count} objects: {objects_str}."
+    except Exception as e:
+        return f"Error detecting objects: {str(e)}"
+
+def cleanup_object_recognition():
+    """Release webcam, stop detection thread, and close window"""
+    global cap, detection_thread, object_recognition_mode, stop_event
+    stop_event.set()  # Signal detection thread to stop
+    if detection_thread is not None:
+        detection_thread.join()
+        detection_thread = None
+    if cap is not None:
+        cap.release()
+        cap = None
+    object_recognition_mode = False
+    cv2.destroyAllWindows()
+
+# =============================================================================
+# VIRTUAL ASSSISTANT
+# =============================================================================
+
+def virtual_assistant():
+    global surveillance_system, surveillance_thread, emotional_intelligence_mode
+    try:
+        greet_user()
+        speak("I am Elsa, your virtual assistant. How can I help you?")
+        surveillance_system = MultiSurveillanceSystem(camera_source=0, output_folder="surveillance_output", speak_callback=speak)
+        running = True
+        while running:
+            command = listen()
+            if command:
+                running = process_command(command)
+    finally:
+        if surveillance_system:
+            surveillance_system.cleanup()
+        if surveillance_thread and surveillance_thread.is_alive():
+            surveillance_thread.join(timeout=1.0)
+        cleanup_object_recognition()
+
+# =============================================================================
+# SPEAKING AND LISTENING
+# =============================================================================
+
+# Function for speaking with gTTS
+def speak(text):
+    # Create a temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as fp:
+        temp_filename = fp.name
+    
+    # Generate speech
+    tts = gTTS(text=text, lang='en', slow=False)
+    tts.save(temp_filename)
+    
+    # Initialize pygame mixer
+    pygame.mixer.init()
+    pygame.mixer.music.load(temp_filename)
+    pygame.mixer.music.play()
+    
+    # Wait for the audio to finish playing
+    while pygame.mixer.music.get_busy():
+        pygame.time.Clock().tick(10)
+    
+    # Clean up
+    pygame.mixer.music.stop()
+    pygame.mixer.quit()
+    
+    # Remove temporary file
+    try:
+        os.unlink(temp_filename)
+    except:
+        pass
+    
+    print(text)
+
+# Function to listen to voice input
+def listen():
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        print("Listening...")
+        recognizer.adjust_for_ambient_noise(source, duration=1)
+        audio = recognizer.listen(source)
+    
+    try:
+        print("Recognizing...")
+        command = recognizer.recognize_google(audio).lower()
+        print(f"You said: {command}")
+        return command
+    except sr.UnknownValueError:
+        speak("Sorry, I didn't understand that.")
+        return ""
+    except sr.RequestError:
+        speak("Sorry, there was an error with the speech recognition service.")
+        return ""
+
+# Function to greet the user
+def greet_user():
+    current_hour = datetime.datetime.now().hour
+    if current_hour < 12:
+        greeting = "Good morning!"
+    elif 12 <= current_hour < 18:
+        greeting = "Good afternoon!"
+    else:
+        greeting = "Good evening!"
+    
+    speak(greeting)
+    print(greeting)
+
+# =============================================================================
+# PERSONALIZED EXPERIENCE
+# =============================================================================
+
+class PersonalizationEngine:
+    def __init__(self):
+        self.user_profile_file = "ELSA_user_profile.json"
+        self.current_user = None
+        self.user_profiles = self.load_profiles()
+        self.session_commands = []
+
+    def load_profiles(self):
+        """Load user profiles from file"""
+        try:
+            if os.path.exists(self.user_profile_file):
+                with open(self.user_profile_file, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"Error loading profiles: {e}")
+        return {}
+    
+    def save_profiles(self):
+        """Save user profiles to file"""
+        try:
+            with open(self.user_profile_file, 'w') as f:
+                json.dump(self.user_profiles, f, indent=2)
+        except Exception as e:
+            print(f"Error saving profiles: {e}")
+    
+    def create_user_profile(self, username):
+        """Create a new user profile"""
+        profile = {
+            'username': username,
+            'created_date': datetime.datetime.now().isoformat(),
+            'last_active': datetime.datetime.now().isoformat(),
+            'preferences': {
+                'greeting_style': 'formal',  # formal, casual, friendly
+                'response_length': 'medium',  # short, medium, detailed
+                'voice_speed': 'normal',  # slow, normal, fast
+                'favorite_apps': [],
+                'favorite_topics': [],
+                'preferred_search_engines': ['google'],
+                'work_schedule': None,
+                'time_zone': None
+            },
+            'usage_stats': {
+                'total_commands': 0,
+                'most_used_commands': {},
+                'session_count': 0,
+                'average_session_length': 0,
+                'favorite_time_of_day': None
+            },
+            'command_history': [],
+            'learning_data': {
+                'common_phrases': {},
+                'correction_count': 0,
+                'successful_tasks': [],
+                'failed_tasks': []
+            }
+        }
+        self.user_profiles[username] = profile
+        self.save_profiles()
+        return profile
+    
+    def set_current_user(self, username):
+        """Set the current active user"""
+        if username not in self.user_profiles:
+            self.create_user_profile(username)
+        
+        self.current_user = username
+        # Update last active time
+        self.user_profiles[username]['last_active'] = datetime.datetime.now().isoformat()
+        self.user_profiles[username]['usage_stats']['session_count'] += 1
+        self.save_profiles()
+    
+    def get_current_profile(self):
+        """Get current user's profile"""
+        if self.current_user and self.current_user in self.user_profiles:
+            return self.user_profiles[self.current_user]
+        return None
+    
+    def update_preferences(self, key, value):
+        """Update user preferences"""
+        if self.current_user:
+            self.user_profiles[self.current_user]['preferences'][key] = value
+            self.save_profiles()
+    
+    def log_command(self, command, success=True):
+        """Log a command for learning purposes"""
+        if not self.current_user:
+            return
+            
+        profile = self.user_profiles[self.current_user]
+        
+        # Update command statistics
+        profile['usage_stats']['total_commands'] += 1
+        if command in profile['usage_stats']['most_used_commands']:
+            profile['usage_stats']['most_used_commands'][command] += 1
+        else:
+            profile['usage_stats']['most_used_commands'][command] = 1
+        
+        # Add to command history (keep last 100)
+        profile['command_history'].append({
+            'command': command,
+            'timestamp': datetime.datetime.now().isoformat(),
+            'success': success
+        })
+        if len(profile['command_history']) > 100:
+            profile['command_history'] = profile['command_history'][-100:]
+        
+        # Track successful/failed tasks
+        if success:
+            profile['learning_data']['successful_tasks'].append(command)
+        else:
+            profile['learning_data']['failed_tasks'].append(command)
+        
+        # Keep only last 50 of each
+        for task_type in ['successful_tasks', 'failed_tasks']:
+            if len(profile['learning_data'][task_type]) > 50:
+                profile['learning_data'][task_type] = profile['learning_data'][task_type][-50:]
+        
+        self.session_commands.append(command)
+        self.save_profiles()
+    
+    def get_personalized_greeting(self):
+        """Generate a personalized greeting"""
+        if not self.current_user:
+            return "Hello! I'm Elsa, your virtual assistant."
+        
+        profile = self.get_current_profile()
+        username = profile['username']
+        greeting_style = profile['preferences']['greeting_style']
+        
+        current_hour = datetime.datetime.now().hour
+        if current_hour < 12:
+            time_greeting = "Good morning"
+        elif 12 <= current_hour < 18:
+            time_greeting = "Good afternoon"
+        else:
+            time_greeting = "Good evening"
+        
+        if greeting_style == 'formal':
+            return f"{time_greeting}, {username}. I'm Elsa, ready to assist you today."
+        elif greeting_style == 'casual':
+            return f"Hey {username}! Elsa here. What's up?"
+        else:  # friendly
+            return f"{time_greeting}, {username}! Great to see you again. How can I help?"
+    
+    def get_command_suggestions(self):
+        """Suggest commands based on usage patterns"""
+        if not self.current_user:
+            return []
+        
+        profile = self.get_current_profile()
+        most_used = profile['usage_stats']['most_used_commands']
+        
+        # Get top 3 most used commands
+        if most_used:
+            sorted_commands = sorted(most_used.items(), key=lambda x: x[1], reverse=True)
+            return [cmd for cmd, count in sorted_commands[:3]]
+        return []
+    
+    def adapt_response_length(self, text):
+        """Adapt response length based on user preference"""
+        if not self.current_user:
+            return text
+        
+        profile = self.get_current_profile()
+        length_pref = profile['preferences']['response_length']
+        
+        sentences = text.split('. ')
+        
+        if length_pref == 'short' and len(sentences) > 2:
+            return '. '.join(sentences[:2]) + '.'
+        elif length_pref == 'detailed':
+            return text  # Keep full length
+        
+        return text  # Medium is default
+    
+    def learn_from_correction(self, original_command, corrected_command):
+        """Learn from user corrections"""
+        if not self.current_user:
+            return
+        
+        profile = self.user_profiles[self.current_user]
+        profile['learning_data']['correction_count'] += 1
+        
+        # Store common phrase corrections
+        if original_command not in profile['learning_data']['common_phrases']:
+            profile['learning_data']['common_phrases'][original_command] = corrected_command
+        
+        self.save_profiles()
+
+# Global personalization engine
+personalization = PersonalizationEngine()
+
+# function to check the computer system status:
+def check_system():
+    # CPU usage
+    cpu_usage = psutil.cpu_percent(interval=1)
+    # Memory usage
+    memory = psutil.virtual_memory()
+    memory_usage = memory.percent
+    memory_available = memory.available // (1024 * 1024)  # Convert to MB
+    # Disk usage
+    disk = psutil.disk_usage('/')
+    disk_usage = disk.percent
+    disk_free = disk.free // (1024 * 1024 * 1024)  # Convert to GB
+
+    report = (
+        f"System check: CPU usage is at {cpu_usage} percent. "
+        f"Memory usage is at {memory_usage} percent, with {memory_available} megabytes available. "
+        f"Disk usage is at {disk_usage} percent, with {disk_free} gigabytes free."
+    )
+    speak(report)
+
+# Function to open a folder
+def open_folder(folder_path):
+    system = platform.system()
+    if not os.path.exists(folder_path):
+        speak(f"Sorry, the folder {folder_path} does not exist.")
+        return
+    
+    if not os.path.isdir(folder_path):
+        speak(f"Sorry, {folder_path} is not a folder.")
+        return
+    
+    try:
+        if system == "Windows":
+            os.startfile(folder_path)  # Windows
+        elif system == "Darwin":  # macOS
+            subprocess.run(["open", folder_path])
+        elif system == "Linux":
+            subprocess.run(["xdg-open", folder_path])
+        else:
+            speak("Sorry, I don't support opening folders on this operating system yet.")
+            return
+        speak(f"Opening folder {folder_path}")
+    except Exception as e:
+        speak(f"An error occurred while trying to open the folder: {str(e)}")
+
+# Function to describe a topic
+def describe_topic(topic):
+    try:
+        # Use Wikipedia for a short description (2 sentences)
+        summary = wikipedia.summary(topic, sentences=2)
+        speak(f"Here's a short description of {topic}: {summary}")
+    except wikipedia.exceptions.DisambiguationError:
+        speak(f"There are multiple entries for {topic}. Please be more specific.")
+    except wikipedia.exceptions.PageError:
+        speak(f"Sorry, I couldn't find information about {topic} on Wikipedia.")
+    except Exception as e:
+        speak("An error occurred while fetching the description.")
+
+# Function to open applications
+def open_application(app_name):
+    app_name = app_name.lower()
+    system = platform.system()
+    
+    # Dictionary mapping common application names to their executable names
+    app_dict = {
+        # Windows applications
+        "notepad": {"Windows": "notepad.exe"},
+        "calculator": {"Windows": "calc.exe", "Darwin": "Calculator.app", "Linux": "gnome-calculator"},
+        "word": {"Windows": "winword.exe"},
+        "excel": {"Windows": "excel.exe"},
+        "powerpoint": {"Windows": "powerpnt.exe"},
+        "chrome": {"Windows": "chrome.exe", "Darwin": "Google Chrome.app", "Linux": "google-chrome"},
+        "firefox": {"Windows": "firefox.exe", "Darwin": "Firefox.app", "Linux": "firefox"},
+        "edge": {"Windows": "msedge.exe"},
+        "zoom": {"Windows": "Zoom.exe", "Darwin": "zoom.us.app", "Linux": "zoom"},
+        "spotify": {"Windows": "Spotify.exe", "Darwin": "Spotify.app", "Linux": "spotify"},
+        "vlc": {"Windows": "vlc.exe", "Darwin": "VLC.app", "Linux": "vlc"},
+        # Mac applications
+        "safari": {"Darwin": "Safari.app"},
+        "terminal": {"Darwin": "Terminal.app", "Linux": "gnome-terminal"},
+        "finder": {"Darwin": "Finder.app"},
+        # Linux applications
+        "gedit": {"Linux": "gedit"}
+    }
+    
+    try:
+        # Check if the application is in our dictionary
+        if app_name in app_dict:
+            if system in app_dict[app_name]:
+                executable = app_dict[app_name][system]
+                speak(f"Opening {app_name}")
+                
+                if system == "Windows":
+                    try:
+                        subprocess.Popen(executable)
+                    except:
+                        # Try from Program Files if direct execution fails
+                        program_files = os.environ.get('ProgramFiles')
+                        program_files_x86 = os.environ.get('ProgramFiles(x86)')
+                        
+                        possible_paths = []
+                        if program_files:
+                            possible_paths.append(program_files)
+                        if program_files_x86:
+                            possible_paths.append(program_files_x86)
+                            
+                        for path in possible_paths:
+                            # Recursive search for the executable
+                            for root, dirs, files in os.walk(path):
+                                if executable.lower() in [f.lower() for f in files]:
+                                    full_path = os.path.join(root, executable)
+                                    subprocess.Popen(full_path)
+                                    return
+                        
+                        # If we still can't find it, try running directly as a command
+                        subprocess.Popen(app_name)
+                        
+                elif system == "Darwin":  # macOS
+                    subprocess.run(["open", "-a", executable])
+                elif system == "Linux":
+                    subprocess.Popen([executable])
+            else:
+                speak(f"Sorry, I don't know how to open {app_name} on your operating system.")
+        else:
+            # Try to open the application directly by name
+            speak(f"Trying to open {app_name}")
+            
+            if system == "Windows":
+                try:
+                    subprocess.Popen([f"{app_name}.exe"])
+                except:
+                    speak(f"I couldn't find the application {app_name}.")
+            elif system == "Darwin":  # macOS
+                try:
+                    subprocess.run(["open", "-a", f"{app_name}"])
+                except:
+                    speak(f"I couldn't find the application {app_name}.")
+            elif system == "Linux":
+                try:
+                    subprocess.Popen([app_name])
+                except:
+                    speak(f"I couldn't find the application {app_name}.")
+            else:
+                speak("Sorry, I don't support opening applications on this operating system yet.")
+    except Exception as e:
+        speak(f"An error occurred while trying to open {app_name}: {str(e)}")
+
+# Improved Wikipedia search function
+def search_wikipedia(query, sentences=4):
+    try:
+        # First try direct summary
+        summary = wikipedia.summary(query, sentences=sentences)
+        return summary
+    except wikipedia.exceptions.DisambiguationError as e:
+        # If disambiguation error, try the first option
+        try:
+            options = e.options
+            if options:
+                summary = wikipedia.summary(options[0], sentences=sentences)
+                return f"Found information about {options[0]}: {summary}"
+            else:
+                return None
+        except:
+            return None
+    except wikipedia.exceptions.PageError:
+        # If page not found, try search
+        try:
+            search_results = wikipedia.search(query, results=1)
+            if search_results:
+                summary = wikipedia.summary(search_results[0], sentences=sentences)
+                return f"Found information about {search_results[0]}: {summary}"
+            else:
+                return None
+        except:
+            return None
+    except Exception as e:
+        print(f"Wikipedia error: {e}")
+        return None
+
+# New function for deep search
+def deep_search(query):
+    speak(f"Initiating deep search for {query}")
+    
+    # Search in Wikipedia (3-5 sentences)
+    wiki_result = search_wikipedia(query, sentences=4)
+    if wiki_result:
+        speak(f"From Wikipedia: {wiki_result}")
+    else:
+        speak("No Wikipedia information found for this query.")
+    
+    # Open LinkedIn search
+    linkedin_url = f"https://www.linkedin.com/search/results/all/?keywords={query}"
+    speak("Opening LinkedIn search results")
+    webbrowser.open(linkedin_url)
+    
+    # Open Twitter/X search
+    twitter_url = f"https://twitter.com/search?q={query}"
+    speak("Opening Twitter search results")
+    webbrowser.open(twitter_url)
+
+    # Open Google search
+    google_url = f"https://www.google.com/search?q={query}"
+    speak("Opening Google search results")
+    webbrowser.open(google_url)
+    
+    speak("Deep search completed.")
+
+# Variable to track deep search mode
+deep_search_mode = False
+
+# =============================================================================
+# ADDITIONAL HOME AI FEATURES
+# =============================================================================
+
+# Weather API key (replace with your OpenWeatherMap API key)
+WEATHER_API_KEY = "YOUR_WEATHER_API_KEY_HERE"
+WEATHER_API_URL = "http://api.openweathermap.org/data/2.5/weather"
+
+def get_weather(city="London"):  # Default to London, change as needed
+    try:
+        params = {
+            'q': city,
+            'appid': WEATHER_API_KEY,
+            'units': 'metric'  # Celsius
+        }
+        response = requests.get(WEATHER_API_URL, params=params, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            temp = data['main']['temp']
+            description = data['weather'][0]['description']
+            return f"The weather in {city} is {description} with a temperature of {temp} degrees Celsius."
+        else:
+            return "Sorry, I couldn't fetch the weather information."
+    except Exception as e:
+        print(f"Weather error: {e}")
+        return "Sorry, there was an error getting the weather."
+
+# Function to play music (opens YouTube search for song)
+def play_music(song):
+    url = f"https://www.youtube.com/results?search_query={song}"
+    webbrowser.open(url)
+    speak(f"Playing {song} on YouTube.")
+
+# Function to set a timer
+def set_timer(minutes):
+    try:
+        time.sleep(int(minutes) * 60)
+        speak("Timer finished!")
+    except:
+        speak("Invalid timer duration.")
+
+# Function to tell a joke
+def tell_joke():
+    jokes = [
+        "Why don't scientists trust atoms? Because they make up everything!",
+        "Why did the scarecrow win an award? Because he was outstanding in his field!",
+        "What do you call fake spaghetti? An impasta!"
+    ]
+    speak(random.choice(jokes))
+
+# Simulate smart home control (e.g., lights)
+def control_lights(action):
+    if action == "on":
+        speak("Turning the lights on.")
+    elif action == "off":
+        speak("Turning the lights off.")
+    else:
+        speak("Invalid light command.")
+
+# Math calculation (simple eval, be careful with security)
+def calculate(expression):
+    try:
+        result = eval(expression)
+        speak(f"The result is {result}.")
+    except:
+        speak("Invalid calculation.")
 
