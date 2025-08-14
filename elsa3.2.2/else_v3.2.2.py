@@ -217,4 +217,236 @@ def suggest_self_care():
     
     speak("Choose something that feels right for you in this moment. Self-care is so important!")
 
+# =============================================================================
+# ROUTINE PLANNING MODE
+# =============================================================================
+
+# ROUTINES SYSTEM - NEW FUNCTIONALITY
+class RoutineManager:
+    def __init__(self):
+        self.routines_file = "trinity_routines.json"
+        self.active_routines = {}
+        self.routine_timers = {}
+        self.load_routines()
+        self.start_routine_checker()
+    
+    def load_routines(self):
+        """Load routines from JSON file"""
+        try:
+            if os.path.exists(self.routines_file):
+                with open(self.routines_file, 'r') as f:
+                    self.active_routines = json.load(f)
+                speak(f"Loaded {len(self.active_routines)} existing routines.")
+            else:
+                self.active_routines = {}
+        except Exception as e:
+            speak("Error loading routines file. Starting with empty routines.")
+            self.active_routines = {}
+    
+    def save_routines(self):
+        """Save routines to JSON file"""
+        try:
+            with open(self.routines_file, 'w') as f:
+                json.dump(self.active_routines, f, indent=2)
+        except Exception as e:
+            speak("Error saving routines file.")
+    
+    def create_routine(self):
+        """Create a new routine interactively"""
+        speak("Let's create a new routine. What would you like to call this routine?")
+        routine_name = listen()
+        
+        if not routine_name:
+            speak("I didn't catch the routine name. Please try again.")
+            return
+        
+        speak(f"Great! What should the routine remind you to do?")
+        routine_message = listen()
+        
+        if not routine_message:
+            speak("I didn't catch the reminder message. Please try again.")
+            return
+        
+        speak("What time should I remind you? Please say the hour first, then minutes. For example, say 'nine thirty PM' or 'fourteen fifteen' for 24-hour format.")
+        time_input = listen()
+        
+        if not time_input:
+            speak("I didn't catch the time. Please try again.")
+            return
+        
+        # Parse the time
+        parsed_time = self.parse_time(time_input)
+        if not parsed_time:
+            speak("I couldn't understand that time format. Please try again with a different format.")
+            return
+        
+        speak("How often should this routine repeat? Say 'daily', 'weekly', or 'once'.")
+        frequency = listen()
+        
+        if frequency not in ['daily', 'weekly', 'once']:
+            frequency = 'daily'  # Default to daily
+            speak("I'll set this as a daily routine.")
+        
+        # Create the routine
+        routine_id = f"{routine_name}_{int(time.time())}"
+        routine_data = {
+            'name': routine_name,
+            'message': routine_message,
+            'time': parsed_time,
+            'frequency': frequency,
+            'active': True,
+            'created': datetime.datetime.now().isoformat()
+        }
+        
+        self.active_routines[routine_id] = routine_data
+        self.save_routines()
+        
+        speak(f"Routine '{routine_name}' created successfully! I'll remind you to {routine_message} at {parsed_time} {frequency}.")
+    
+    def parse_time(self, time_input):
+        """Parse various time formats"""
+        time_input = time_input.lower().replace(':', ' ')
+        
+        # Handle AM/PM format
+        if 'pm' in time_input or 'am' in time_input:
+            try:
+                # Remove pm/am and clean up
+                time_str = time_input.replace('pm', '').replace('am', '').strip()
+                
+                # Handle common spoken formats
+                time_str = time_str.replace('thirty', '30').replace('fifteen', '15').replace('forty five', '45')
+                time_str = time_str.replace('one', '1').replace('two', '2').replace('three', '3').replace('four', '4')
+                time_str = time_str.replace('five', '5').replace('six', '6').replace('seven', '7').replace('eight', '8')
+                time_str = time_str.replace('nine', '9').replace('ten', '10').replace('eleven', '11').replace('twelve', '12')
+                
+                parts = time_str.split()
+                hour = int(parts[0])
+                minute = 0 if len(parts) == 1 else int(parts[1])
+                
+                if 'pm' in time_input and hour != 12:
+                    hour += 12
+                elif 'am' in time_input and hour == 12:
+                    hour = 0
+                
+                return f"{hour:02d}:{minute:02d}"
+                
+            except (ValueError, IndexError):
+                return None
+        
+        # Handle 24-hour format
+        try:
+            time_str = time_input.replace('fifteen', '15').replace('thirty', '30').replace('forty five', '45')
+            time_str = time_str.replace('one', '1').replace('two', '2').replace('three', '3').replace('four', '4')
+            time_str = time_str.replace('five', '5').replace('six', '6').replace('seven', '7').replace('eight', '8')
+            time_str = time_str.replace('nine', '9').replace('ten', '10').replace('eleven', '11').replace('twelve', '12')
+            time_str = time_str.replace('thirteen', '13').replace('fourteen', '14').replace('sixteen', '16')
+            time_str = time_str.replace('seventeen', '17').replace('eighteen', '18').replace('nineteen', '19')
+            time_str = time_str.replace('twenty', '20').replace('twenty one', '21').replace('twenty two', '22')
+            time_str = time_str.replace('twenty three', '23')
+            
+            parts = time_str.split()
+            hour = int(parts[0])
+            minute = 0 if len(parts) == 1 else int(parts[1])
+            
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return f"{hour:02d}:{minute:02d}"
+                
+        except (ValueError, IndexError):
+            pass
+        
+        return None
+    
+    def list_routines(self):
+        """List all active routines"""
+        if not self.active_routines:
+            speak("You don't have any routines set up yet.")
+            return
+        
+        speak(f"You have {len(self.active_routines)} routines:")
+        for routine_id, routine in self.active_routines.items():
+            status = "active" if routine['active'] else "inactive"
+            speak(f"Routine '{routine['name']}': {routine['message']} at {routine['time']} {routine['frequency']}. Status: {status}")
+    
+    def delete_routine(self):
+        """Delete a routine"""
+        if not self.active_routines:
+            speak("You don't have any routines to delete.")
+            return
+        
+        speak("Which routine would you like to delete? Please say the routine name.")
+        routine_to_delete = listen()
+        
+        if not routine_to_delete:
+            speak("I didn't catch the routine name.")
+            return
+        
+        # Find routine by name
+        found_routine = None
+        for routine_id, routine in self.active_routines.items():
+            if routine_to_delete.lower() in routine['name'].lower():
+                found_routine = routine_id
+                break
+        
+        if found_routine:
+            routine_name = self.active_routines[found_routine]['name']
+            del self.active_routines[found_routine]
+            
+            # Cancel timer if exists
+            if found_routine in self.routine_timers:
+                self.routine_timers[found_routine].cancel()
+                del self.routine_timers[found_routine]
+            
+            self.save_routines()
+            speak(f"Routine '{routine_name}' has been deleted.")
+        else:
+            speak("I couldn't find a routine with that name.")
+    
+    def start_routine_checker(self):
+        """Start the background routine checker"""
+        def check_routines():
+            current_time = datetime.datetime.now().strftime("%H:%M")
+            current_day = datetime.datetime.now().weekday()  # 0 = Monday, 6 = Sunday
+            
+            for routine_id, routine in self.active_routines.items():
+                if routine['active'] and routine['time'] == current_time:
+                    # Check if it's time to trigger
+                    should_trigger = False
+                    
+                    if routine['frequency'] == 'daily':
+                        should_trigger = True
+                    elif routine['frequency'] == 'weekly':
+                        # Trigger once per week (same day as created)
+                        created_day = datetime.datetime.fromisoformat(routine['created']).weekday()
+                        should_trigger = (current_day == created_day)
+                    elif routine['frequency'] == 'once':
+                        should_trigger = True
+                        # Deactivate after triggering once
+                        routine['active'] = False
+                        self.save_routines()
+                    
+                    if should_trigger:
+                        self.trigger_routine(routine)
+            
+            # Schedule next check in 60 seconds
+            threading.Timer(60.0, check_routines).start()
+        
+        # Start the checker
+        check_routines()
+    
+    def trigger_routine(self, routine):
+        """Trigger a routine reminder"""
+        reminder_message = f"Routine reminder: {routine['message']}"
+        speak(reminder_message)
+        
+        # Also create a visual notification if possible
+        try:
+            if platform.system() == "Windows":
+                import win11toast
+                toaster = win11toast.ToastNotifier()
+                toaster.show_toast("Trinity Routine Reminder", routine['message'], duration=10)
+        except:
+            pass  # Visual notification failed, but audio worked
+
+routine_manager = RoutineManager()
+
 
